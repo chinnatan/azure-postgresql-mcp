@@ -1,5 +1,7 @@
 # Azure Database for PostgreSQL MCP Server (Preview)
 
+[ภาษาไทย](README.th.md)
+
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) Server that let’s your AI models talk to data hosted in Azure Database for PostgreSQL according to the MCP standard! 
 
 By utilizing this server, you can effortlessly connect any AI application that supports MCP to your PostgreSQL flexible server (using either PostgreSQL password-based authentication or Microsoft Entra authentication methods), enabling you to provide your business data as meaningful context in a standardized and secure manner.
@@ -20,7 +22,7 @@ _*Available when using Microsoft Entra authentication method_
 
 ### Prerequisites
 
-- [Python](https://www.python.org/downloads/) 3.10 or above
+- Either [Python](https://www.python.org/downloads/) 3.10 or above **or** [Docker](https://docs.docker.com/get-docker/) (Docker Engine or Docker Desktop) if you want to run the MCP server in a container without installing Python dependencies on the host.
 - An Azure Database for PostgreSQL flexible server instance with a database containing your business data. For instructions on creating a flexible instance, setting up a database, and connecting to it, please refer to this [quickstart guide](https://learn.microsoft.com/azure/postgresql/flexible-server/quickstart-create-server).
 - An MCP Client application or tool such as [Claude Desktop](https://claude.ai/download) or [Visual Studio Code](https://code.visualstudio.com/download).
 
@@ -62,6 +64,118 @@ _*Available when using Microsoft Entra authentication method_
     pip install azure-identity
     ```
 
+### Running with Docker
+
+You can build and run the MCP server in a container so that Python packages are installed only inside the image, not on your machine.
+
+#### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) (Docker Engine 20.10+ or Docker Desktop).
+- Network access from the container to your Azure Database for PostgreSQL instance (firewall rules, private endpoints, etc., must allow the Docker host’s outbound traffic).
+
+#### Build the image
+
+From the repository root (the directory that contains the `Dockerfile`):
+
+```bash
+docker build -t azure-postgresql-mcp:local .
+```
+
+This produces an image tagged `azure-postgresql-mcp:local`. Use any tag you prefer; the examples below assume that name.
+
+#### Why `docker run -i` matters
+
+The MCP server communicates over **stdio** (standard input/output). You must run the container with **interactive stdin** enabled:
+
+- Use `docker run -i` (and typically `--rm` to remove the container when the client exits).
+
+Without `-i`, the MCP client cannot talk to the server process.
+
+#### Environment variables
+
+Use the same variables as for a local Python run:
+
+- **Password authentication:** `PGHOST`, `PGUSER`, `PGPASSWORD`, and optionally `PGDATABASE` (if your client or workflow expects it).
+- **Microsoft Entra:** see [Using Microsoft Entra authentication method](#using-microsoft-entra-authentication-method). You can pass the same `env` values using repeated `-e` / `--env` flags on `docker run`.
+
+For Microsoft Entra inside Docker, `DefaultAzureCredential` must be able to obtain credentials (for example, environment variables for a service principal, or a mounted Azure CLI login — see the note below).
+
+#### Use the MCP Server with Claude Desktop (Docker)
+
+1. Build the image (see [Build the image](#build-the-image)).
+2. In Claude Desktop, open **Settings → Developer → Edit Config** and add or merge a server entry. Example using password authentication:
+
+    ```json
+    {
+        "mcpServers": {
+            "azure-postgresql-mcp": {
+                "command": "docker",
+                "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e", "PGHOST=<Fully qualified name of your Azure Database for PostgreSQL instance>",
+                    "-e", "PGUSER=<Your Azure Database for PostgreSQL username>",
+                    "-e", "PGPASSWORD=<Your password>",
+                    "-e", "PGDATABASE=<Your database name>",
+                    "azure-postgresql-mcp:local"
+                ]
+            }
+        }
+    }
+    ```
+
+    On Windows, if `docker` is not on the PATH that Claude Desktop sees, use the full path to `docker.exe` in `"command"` (for example, under Docker Desktop’s installation directory).
+
+3. Restart Claude Desktop.
+
+**Microsoft Entra (Docker):** Pass the same variables as in [Using Microsoft Entra authentication method](#using-microsoft-entra-authentication-method) with additional `-e` entries (for example `AZURE_USE_AAD`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`). If you rely on Azure CLI login on the host, you can mount the CLI’s Azure directory into the container (paths vary by OS; Linux/macOS example):
+
+```text
+-v ~/.azure:/root/.azure:ro
+```
+
+Add that string to the `"args"` array after `"run", "-i", "--rm",` and before the `-e` flags. The container runs as root, so the credential directory inside the container is `/root/.azure`. Adjust if you use a non-root user in a custom image.
+
+#### Use the MCP Server with Visual Studio Code (Docker)
+
+1. Build the image (see [Build the image](#build-the-image)).
+2. Open **Settings**, search for **MCP**, and edit `settings.json`. Example:
+
+    ```json
+    {
+        "mcp": {
+            "inputs": [],
+            "servers": {
+                "azure-postgresql-mcp": {
+                    "command": "docker",
+                    "args": [
+                        "run",
+                        "-i",
+                        "--rm",
+                        "-e", "PGHOST=<Fully qualified name of your Azure Database for PostgreSQL instance>",
+                        "-e", "PGUSER=<Your Azure Database for PostgreSQL username>",
+                        "-e", "PGPASSWORD=<Your password>",
+                        "-e", "PGDATABASE=<Your database name>",
+                        "azure-postgresql-mcp:local"
+                    ]
+                }
+            }
+        }
+    }
+    ```
+
+3. Use Copilot Chat in Agent mode and select the MCP tools as described in the VS Code section above.
+
+#### Optional: manual smoke test
+
+To confirm the image starts (the process will wait for MCP traffic on stdio):
+
+```bash
+docker run -i --rm -e PGHOST=example.postgres.database.azure.com -e PGUSER=user -e PGPASSWORD=pass azure-postgresql-mcp:local
+```
+
+Stop with Ctrl+C. This does not validate database connectivity unless the variables point to a real server.
 
 ### Use the MCP Server with Claude Desktop
 
@@ -161,6 +275,72 @@ To Microsoft Entra authentication method (recommended) to connect your MCP Serve
     }
 }
 ```
+
+## Verifying your setup
+
+Use the steps below to confirm the server, database access, and MCP integration.
+
+### 1. Unit tests (no Azure database required)
+
+After installing dependencies and `pytest`:
+
+```bash
+pip install pytest
+PYTHONPATH=src pytest --color=yes -v
+```
+
+All tests should pass. This validates Python code with mocks; it does **not** connect to Azure. See [tests/README.md](tests/README.md).
+
+### 2. Database connectivity (password authentication)
+
+Confirm your machine (or Docker host) can reach the server and that credentials work. Azure Database for PostgreSQL typically requires TLS. Example using [psql](https://www.postgresql.org/docs/current/app-psql.html):
+
+```bash
+export PGHOST="<your-server>.postgres.database.azure.com"
+export PGUSER="<user>"
+export PGPASSWORD="<password>"
+psql "host=$PGHOST port=5432 dbname=postgres user=$PGUSER password=$PGPASSWORD sslmode=require" -c "SELECT 1"
+```
+
+You should see a result row with `1`. If this fails, fix firewall rules, networking, or credentials before debugging MCP.
+
+### 3. MCP Inspector (end-to-end MCP + live database)
+
+The [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) exercises the MCP protocol and lets you call tools from a browser. Install [Node.js](https://nodejs.org/) ^22.7.5 or later (`node -v` to verify).
+
+**Local Python server** (repository root, virtual environment activated, dependencies installed):
+
+```bash
+npx -y @modelcontextprotocol/inspector \
+  -e PGHOST="<your-server>.postgres.database.azure.com" \
+  -e PGUSER="<user>" \
+  -e PGPASSWORD="<password>" \
+  python src/azure_postgresql_mcp.py
+```
+
+**Docker** (after [building the image](#build-the-image)):
+
+```bash
+npx -y @modelcontextprotocol/inspector \
+  docker run -i --rm \
+  -e PGHOST="<your-server>.postgres.database.azure.com" \
+  -e PGUSER="<user>" \
+  -e PGPASSWORD="<password>" \
+  azure-postgresql-mcp:local
+```
+
+Open the URL printed in the terminal (often `http://localhost:6274`). In the UI, connect to the server, open **Tools**, and run **`get_databases`** (or another tool). A successful response means the MCP process, protocol, and PostgreSQL access are working together.
+
+For Microsoft Entra, add the same environment variables as in [Using Microsoft Entra authentication method](#using-microsoft-entra-authentication-method) using extra `-e` flags, and ensure `DefaultAzureCredential` can obtain credentials on that host (for Docker, see the note about mounting `~/.azure` when using Azure CLI login).
+
+### 4. Your MCP client (Claude Desktop / VS Code)
+
+After client configuration:
+
+- **Claude Desktop:** A hammer icon appears near the chat input; open it to list tools (for example `get_databases`).
+- **VS Code:** In GitHub Copilot Chat **Agent** mode, use **Select Tools** (hammer) and confirm the same tools appear.
+
+Run a simple tool from the client. If the Inspector succeeds but the client does not, check executable paths, environment variables, and whether `docker` or `python` is on the `PATH` the application sees.
 
 ## Contributing
 The Azure Database for PostgreSQL MCP Server is currently in Preview. As we continue to develop and enhance its features, we welcome all contributions! For more details, see the [CONTRIBUTING.md](CONTRIBUTING.md) file.
